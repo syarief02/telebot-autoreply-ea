@@ -314,54 +314,54 @@ async def get_unread_chats(page: Page) -> list[tuple]:
 
 
 async def get_last_incoming_message(page: Page) -> tuple[Optional[str], Optional[str]]:
-    """Get the last incoming message text and its unique ID."""
-    # Telegram Web K uses .bubble.is-in for incoming messages
-    selectors = [
-        ".bubble.is-in",
-        ".bubble:not(.is-out)",
-        ".message:not(.is-out)",
-    ]
-    for selector in selectors:
-        try:
-            messages = await page.query_selector_all(selector)
-            if not messages:
-                continue
-            # Get the last incoming message
-            last_msg = messages[-1]
-            # Extract message ID (Telegram Web K uses data-mid)
-            msg_id = await last_msg.get_attribute("data-mid") or \
-                     await last_msg.get_attribute("data-message-id") or \
-                     await last_msg.get_attribute("data-msg-id")
-
-            # Extract text content — Telegram Web K nests text in .translatable-message
-            text_selectors = [
-                ".translatable-message",
-                ".text-content",
-                ".message .text-content",
-                ".message .translatable-message",
-                ".message",
-            ]
-            text = None
-            for ts in text_selectors:
-                text_el = await last_msg.query_selector(ts)
-                if text_el:
-                    text = await text_el.inner_text()
-                    if text and text.strip():
-                        text = text.strip()
-                        break
-                    text = None
-
-            if not msg_id:
-                if text:
-                    msg_id = f"text-{hash(text)}"
-                else:
-                    continue
-
-            if text:
-                return text, str(msg_id)
-        except Exception as e:
-            log("Read", f"Selector '{selector}' failed: {e}")
-            continue
+    """Get the recent chat history and the unique ID of the last incoming message."""
+    try:
+        # Evaluate JS to grab the last 15 messages (both incoming and outgoing)
+        result = await page.evaluate('''() => {
+            const messageNodes = document.querySelectorAll('.message, .bubble, .message-list-item');
+            if (!messageNodes || messageNodes.length === 0) return null;
+            
+            let history = [];
+            let lastIncomingId = null;
+            
+            // Only care about the last 15 messages for context
+            const recentNodes = Array.from(messageNodes).slice(-15);
+            
+            for (const node of recentNodes) {
+                const isOut = node.classList.contains('is-out') || node.classList.contains('message-out');
+                const isIn = node.classList.contains('is-in') || node.classList.contains('message-in') || node.matches(':not(.is-out):not(.message-out)');
+                
+                // Need text content to continue
+                const textNode = node.querySelector('.translatable-message, .text-content');
+                if (!textNode) continue;
+                
+                let text = textNode.innerText || textNode.textContent;
+                if (!text || !text.trim()) continue;
+                text = text.trim();
+                
+                // Determine sender
+                const sender = isOut ? "You" : "Customer";
+                history.push(`${sender}: ${text}`);
+                
+                if (!isOut) {
+                    lastIncomingId = node.getAttribute('data-mid') || node.getAttribute('data-message-id') || `text-${text.length}`;
+                }
+            }
+            
+            if (history.length === 0) return null;
+            
+            return {
+                historyText: history.join('\\n'),
+                lastId: lastIncomingId
+            };
+        }''')
+        
+        if result and result.get("historyText") and result.get("lastId"):
+            return result["historyText"], str(result["lastId"])
+            
+    except Exception as e:
+        log("Read", f"Failed to extract chat history: {e}")
+        
     return None, None
 
 
@@ -553,11 +553,13 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
 
         # For allowed group chats, also check trigger keywords
         if group and not should_reply_in_group(message_text):
-            log("Skip", f"Group message doesn't match triggers: {message_text[:50]}")
+            preview = message_text.replace('\\n', ' ')[:50]
+            log("Skip", f"Group message doesn't match triggers: {preview}")
             replied_messages.add(msg_id)
             return
 
-        log("AI", f'Generating reply for: "{message_text[:60]}..."')
+        preview = message_text.replace('\\n', ' ')[:60]
+        log("AI", f'Generating reply for context: "{preview}..."')
 
         # Human-like delay before replying
         delay = random.uniform(MIN_REPLY_DELAY, MAX_REPLY_DELAY)
