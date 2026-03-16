@@ -47,6 +47,7 @@ CACHE_FILE = Path("knowledge_cache.txt")
 replied_messages: set[str] = set()
 KNOWLEDGE: str = ""
 credit_paused_until: float = 0  # Timestamp until which we pause API calls
+PROCESSED_CHAT_STATES: dict[str, str] = {}  # Tracks last seen chat preview to avoid infinite loops
 
 # ============================================================================
 # SECTION: LOGGING
@@ -240,46 +241,76 @@ async def find_telegram_page(browser) -> Optional[Page]:
 
 
 async def get_unread_chats(page: Page) -> list[tuple]:
-    """Find chat elements with unread message indicators.
-    Returns list of (element, chat_name) tuples.
+    """Find chat elements that have unread messages OR are unreplied today.
+    Returns list of (element, chat_name, subtitle) tuples.
     """
-    # Multiple selector fallbacks for Telegram Web K
-    selectors = [
-        "a.chatlist-chat .unread-count",
-        ".chatlist-chat .badge:not(.badge-muted)",
-        "a.chatlist-chat .unread",
-        ".chatlist-chat .badge-unread",
-    ]
-    for selector in selectors:
-        try:
-            elements = await page.query_selector_all(selector)
-            if elements:
-                log("Scan", f"Found {len(elements)} unread chats (selector: {selector})")
-                # Return the parent chat elements with their names
-                result = []
-                for el in elements:
-                    parent = await el.evaluate_handle(
-                        "el => el.closest('a.chatlist-chat') || el.closest('[data-peer-id]') || el.closest('.chatlist-chat')"
-                    )
-                    if parent:
-                        # Extract chat name from the chatlist item (before clicking)
-                        chat_name = ""
-                        try:
-                            chat_name = await parent.evaluate(
-                                """el => {
-                                    const title = el.querySelector('.peer-title') ||
-                                                  el.querySelector('.user-title') ||
-                                                  el.querySelector('.dialog-title');
-                                    return title ? title.textContent.trim() : '';
-                                }"""
-                            )
-                        except Exception:
-                            pass
-                        result.append((parent, chat_name))
-                return result
-        except Exception:
-            continue
-    return []
+    try:
+        # Use a JS evaluator to find all candidate chats directly in the browser
+        candidate_handles = await page.evaluate_handle('''() => {
+            const chats = document.querySelectorAll('.chatlist-chat');
+            const results = [];
+            for (const chat of chats) {
+                // 1. Check for unread badge
+                const badge = chat.querySelector('.badge:not(.badge-muted), .unread, .dialog-subtitle-badge-unread');
+                if (badge) {
+                    results.push(chat);
+                    continue;
+                }
+                
+                // 2. Not unread. Check if it's from today and unreplied.
+                const timeEl = chat.querySelector('.message-time');
+                const timeText = timeEl ? timeEl.textContent.trim() : "";
+                
+                // If time has a colon (e.g. "10:42 AM"), it generally means today.
+                if (timeText.includes(':')) {
+                    const subtitleEl = chat.querySelector('.dialog-subtitle');
+                    const subtitleText = subtitleEl ? subtitleEl.textContent.trim() : "";
+                    
+                    const authorEl = chat.querySelector('.dialog-subtitle .peer-title, .dialog-subtitle .user-title');
+                    const authorText = authorEl ? authorEl.textContent.trim() : "";
+                    
+                    // If the preview starts with You or the author is You, we already replied.
+                    const startsWithYou = subtitleText.startsWith("You: ") || 
+                                          subtitleText.startsWith("You:") || 
+                                          subtitleText.startsWith("Anda:") || 
+                                          authorText === "You" || 
+                                          authorText === "Anda";
+                    
+                    if (!startsWithYou) {
+                        results.push(chat);
+                    }
+                }
+            }
+            return results;
+        }''')
+        
+        # Process the candidates into Python objects
+        length = await candidate_handles.evaluate("els => els.length")
+        result = []
+        for i in range(length):
+            chat_el = await candidate_handles.evaluate_handle(f"els => els[{i}]")
+            
+            chat_name, subtitle = await chat_el.evaluate('''el => {
+                const titleEl = el.querySelector('.peer-title') || el.querySelector('.user-title') || el.querySelector('.dialog-title');
+                const name = titleEl ? titleEl.textContent.trim() : '';
+                
+                const subEl = el.querySelector('.dialog-subtitle');
+                const sub = subEl ? subEl.textContent.trim() : '';
+                
+                return [name, sub];
+            }''')
+            
+            if chat_name:
+                # If we've already processed this exact message state today, skip it
+                if PROCESSED_CHAT_STATES.get(chat_name) == subtitle:
+                    continue
+                result.append((chat_el, chat_name, subtitle))
+                
+        return result
+        
+    except Exception as e:
+        log("Scan", f"Error scanning chats: {e}")
+        return []
 
 
 async def get_last_incoming_message(page: Page) -> tuple[Optional[str], Optional[str]]:
@@ -652,9 +683,11 @@ async def main_loop(page: Page, api_key: str) -> None:
                 unread_chats = await get_unread_chats(page)
 
                 if unread_chats:
-                    log("Info", f"Found {len(unread_chats)} unread chat(s) in '{folder}'")
-                    for chat_element, chat_name in unread_chats:
+                    log("Info", f"Found {len(unread_chats)} unread/unreplied chat(s) in '{folder}'")
+                    for chat_element, chat_name, subtitle in unread_chats:
                         await process_chat(page, chat_element, chat_name, api_key)
+                        # Record state so we don't endlessly loop un-repliable messages
+                        PROCESSED_CHAT_STATES[chat_name] = subtitle
                     loops_in_folder = 0 # Had activity, restart clock for staying in this folder
 
             loops_in_folder += 1
