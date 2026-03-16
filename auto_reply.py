@@ -150,14 +150,15 @@ def extract_accounts_from_text(text: str) -> list[tuple[str, str]]:
     results = []
     text_lower = text.lower()
     
-    # Pattern 1: "broker_name account_number" (e.g. "xm 43195947")
+    # Pattern 1: "broker_name ... account_number" (e.g. "xm saya 43195947")
     for broker in broker_names:
-        pattern = rf'\b{broker}\s*[:#]?\s*(\d{{5,10}})\b'
+        # [^\d]{0,15} allows up to 15 non-digit characters (spaces, words like 'saya', 'is') between broker and number
+        pattern = rf'\b{broker}\b[^\d]{{0,15}}(\d{{5,10}})\b'
         for match in re.finditer(pattern, text_lower):
             results.append((broker.upper(), match.group(1)))
     
-    # Pattern 2: "account number: 12345678" or "acc no 12345678"
-    acc_pattern = r'(?:account|acc|akaun|no\.?\s*akaun|account\s*(?:number|no|num))\s*[:#]?\s*(\d{5,10})\b'
+    # Pattern 2: "account ... 12345678" or "acc no saya 12345678"
+    acc_pattern = r'(?:account|acc|akaun|no\.?\s*akaun|account\s*(?:number|no|num))\b[^\d]{{0,15}}(\d{{5,10}})\b'
     for match in re.finditer(acc_pattern, text_lower):
         num = match.group(1)
         # Try to find a nearby broker mention
