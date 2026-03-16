@@ -588,6 +588,12 @@ async def type_and_send(page: Page, reply_text: str) -> bool:
 async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -> None:
     """Process an unread chat: pre-filter by name, click, read, reply."""
     try:
+        # === SKIP SELF-CHATS: Never reply to your own saved messages ===
+        skip_names = {"saved messages", "my notes"}
+        if chat_name and chat_name.lower().strip() in skip_names:
+            log("Skip", f"Ignoring self-chat: {chat_name}")
+            return
+
         # === PRE-FILTER: Check chat name BEFORE clicking ===
         # If we got a name from the chatlist and it looks like a non-allowed group,
         # skip it immediately without wasting time clicking into it
