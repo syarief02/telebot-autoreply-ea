@@ -85,12 +85,23 @@ TeleBot Autoreply EA/
 
 ### Setup (4 Steps)
 
+**Step 1 — Set up your API key:**
+```bash
+# Copy the example file and rename it
+copy .env.example .env
 ```
-1.  Open .env → replace "your_api_key_here" with your Anthropic API key
-2.  Double-click START_BRAVE.bat → open web.telegram.org → log in
-3.  Double-click START_BOT.bat → bot starts automatically
-4.  Done! The bot is now monitoring and replying to unread messages.
+Then open the new `.env` file and replace `your_api_key_here` with your actual Anthropic API key:
 ```
+ANTHROPIC_API_KEY=sk-ant-api03-your-actual-key-here
+```
+
+**Step 2 — Launch Brave:**
+Double-click `START_BRAVE.bat`, then open `https://web.telegram.org` in the browser and log in.
+
+**Step 3 — Start the bot:**
+Double-click `START_BOT.bat` — it will install dependencies and start the bot automatically.
+
+**Step 4 — Done!** The bot is now monitoring and replying to unread messages. 🚀
 
 ### Manual Setup (Alternative)
 
