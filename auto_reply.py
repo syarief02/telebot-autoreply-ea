@@ -261,22 +261,17 @@ async def get_unread_chats(page: Page) -> list[tuple]:
                 const timeEl = chat.querySelector('.message-time');
                 const timeText = timeEl ? timeEl.textContent.trim() : "";
                 
-                // If time has a colon (e.g. "10:42 AM"), it generally means today.
+                // If time has a colon (e.g. "10:42 AM", "18:40"), it generally means today.
                 if (timeText.includes(':')) {
-                    const subtitleEl = chat.querySelector('.dialog-subtitle');
-                    const subtitleText = subtitleEl ? subtitleEl.textContent.trim() : "";
+                    // Check if the message is from us (outgoing) by looking for visible checkmarks.
+                    // Telegram Web K has a .message-status icon. If it lacks .hide, it's outgoing.
+                    const outgoingStatus = chat.querySelector('.message-status:not(.hide)');
                     
-                    const authorEl = chat.querySelector('.dialog-subtitle .peer-title, .dialog-subtitle .user-title');
-                    const authorText = authorEl ? authorEl.textContent.trim() : "";
+                    // Also check if it's a Draft 
+                    const isDraft = chat.querySelector('.dialog-subtitle .danger, .dialog-subtitle .i18n')?.textContent.includes('Draft');
                     
-                    // If the preview starts with You or the author is You, we already replied.
-                    const startsWithYou = subtitleText.startsWith("You: ") || 
-                                          subtitleText.startsWith("You:") || 
-                                          subtitleText.startsWith("Anda:") || 
-                                          authorText === "You" || 
-                                          authorText === "Anda";
-                    
-                    if (!startsWithYou) {
+                    // We only want to reply if there is NO outgoing status icon and it's not a draft
+                    if (!outgoingStatus && !isDraft) {
                         results.push(chat);
                     }
                 }
@@ -295,7 +290,8 @@ async def get_unread_chats(page: Page) -> list[tuple]:
                 const name = titleEl ? titleEl.textContent.trim() : '';
                 
                 const subEl = el.querySelector('.dialog-subtitle');
-                const sub = subEl ? subEl.textContent.trim() : '';
+                // Clean up subtitle (remove HTML elements like imgs/spans to get text)
+                const sub = subEl ? subEl.innerText || subEl.textContent.trim() : '';
                 
                 return [name, sub];
             }''')
