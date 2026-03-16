@@ -472,12 +472,13 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
         # Forum-style groups (with topic channels) have a 'topics-slider' div
         # that intercepts all clicks and causes infinite loops. Detect and escape.
         try:
-            forum_indicator = await page.query_selector(".topics-slider, .forum-topics, .topics-container")
-            if forum_indicator:
-                log("Skip", f"Forum group detected (has topic channels): {chat_name}")
-                await page.keyboard.press("Escape")
-                await asyncio.sleep(0.5)
-                return
+            forum_indicators = await page.query_selector_all(".topics-slider, .forum-topics, .topics-container")
+            for indicator in forum_indicators:
+                if await indicator.is_visible():
+                    log("Skip", f"Forum group detected (has topic channels): {chat_name}")
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.5)
+                    return
         except Exception:
             pass
 
