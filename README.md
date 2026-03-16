@@ -21,6 +21,7 @@
 | 🔒 **Smart Filtering** | Ignores media-only messages, already-replied messages, and non-relevant group chats |
 | 🛡️ **Crash-Proof** | All errors caught with exponential backoff — never crashes on network/API failures |
 | ⏱️ **Knowledge Caching** | Caches fetched knowledge for 1 hour to avoid re-fetching and rate limits |
+| ⚙️ **Modular Config** | All settings, URLs, and prompts live in `config.py` — easy to edit without touching bot logic |
 
 ---
 
@@ -34,16 +35,23 @@
 │   Web K)     │     │   + httpx)   │     │              │
 └──────────────┘     └──────┬───────┘     └──────────────┘
                             │
-                     ┌──────▼───────┐
-                     │  Knowledge   │
-                     │  Sources     │
-                     │  (Website +  │
-                     │   GitHub)    │
-                     └──────────────┘
+                    ┌───────▼───────┐
+                    │  config.py    │
+                    │  (URLs, keys, │
+                    │   prompt,     │
+                    │   settings)   │
+                    └───────┬───────┘
+                            │
+                    ┌───────▼───────┐
+                    │  Knowledge    │
+                    │  Sources      │
+                    │  (Website +   │
+                    │   GitHub)     │
+                    └───────────────┘
 ```
 
 **How it works:**
-1. On startup, fetches product knowledge from 13+ URLs (website pages + GitHub READMEs)
+1. On startup, reads config from `config.py` and fetches product knowledge from 13+ URLs
 2. Connects to your already-running Brave browser via Chrome DevTools Protocol (CDP)
 3. Finds the Telegram Web tab and starts monitoring for unread messages
 4. When an unread message is found, reads it, generates an AI reply, and types it out character-by-character
@@ -54,7 +62,8 @@
 
 ```
 TeleBot Autoreply EA/
-├── auto_reply.py       # Main bot — all logic in one file
+├── auto_reply.py       # Main bot logic (don't need to edit)
+├── config.py           # ⚙️ ALL editable config — URLs, prompt, settings
 ├── requirements.txt    # Python dependencies
 ├── .env                # API key (gitignored)
 ├── .gitignore          # Excludes .env, cache, __pycache__
@@ -99,9 +108,11 @@ python auto_reply.py
 
 ---
 
-## ⚙️ Configuration
+## ⚙️ Configuration (`config.py`)
 
-All config values are at the top of `auto_reply.py`:
+All settings are in `config.py` — you never need to edit `auto_reply.py`.
+
+### Bot Settings
 
 | Variable | Default | Description |
 |---|---|---|
@@ -111,7 +122,35 @@ All config values are at the top of `auto_reply.py`:
 | `TYPING_SPEED` | `0.04` | Seconds per character when typing |
 | `KNOWLEDGE_CACHE_TTL` | `3600` | Cache TTL in seconds (1 hour) |
 | `MAX_TOKENS_REPLY` | `500` | Max tokens for Claude reply |
+
+### Chat Filter
+
+| Variable | Default | Description |
+|---|---|---|
 | `ALLOWED_GROUP_NAMES` | `["ea budak ubat"]` | Group chats the bot is allowed to reply in |
+| `GROUP_TRIGGERS` | `{"ea", "bot", ...}` | Keywords that trigger a reply in allowed groups |
+
+### Adding a New EA
+
+When you create a new EA, just add it to `config.py`:
+
+```python
+# 1. Add the website page
+WEBSITE_URLS = [
+    ...
+    "https://eabudakubat.com/your-new-ea",       # ← add here
+]
+
+# 2. Add the GitHub repo (optional section — won't crash if 404)
+GITHUB_OPTIONAL_URLS = [
+    ...
+    "https://github.com/syarief02/Your-New-EA",  # ← add here
+]
+
+# 3. Update KEY FACTS in SYSTEM_PROMPT_TEMPLATE if needed
+```
+
+Delete `knowledge_cache.txt` after editing to force a fresh fetch on next startup.
 
 ---
 
@@ -119,29 +158,29 @@ All config values are at the top of `auto_reply.py`:
 
 The bot implements multiple layers of human-like behavior to avoid Telegram detection:
 
-1. **Reading delay** — Waits 3–8 seconds after opening a chat before typing (simulates reading)
-2. **Character typing** — Types each character individually with `0.04s + random(0, 0.03s)` delay
-3. **Pre-send pause** — Waits 0.5–1.5 seconds after finishing typing before pressing Enter
-4. **Post-send cooldown** — Waits 1–3 seconds before moving to the next chat
-5. **Scan pacing** — Only checks for new messages every 5 seconds
+| Layer | Behavior | Timing |
+|---|---|---|
+| 📖 Reading delay | Waits before typing after opening a chat | 3–8 seconds (random) |
+| ⌨️ Character typing | Types each char individually, not paste | 0.04s + random(0, 0.03s) per char |
+| ⏸️ Pre-send pause | Waits after finishing typing before Enter | 0.5–1.5 seconds (random) |
+| 💤 Post-send cooldown | Waits before moving to next chat | 1–3 seconds (random) |
+| 🔄 Scan pacing | Checks for new messages periodically | Every 5 seconds |
 
-A typical 100-character reply takes **8–16 seconds** total — indistinguishable from a real person typing.
+**Example:** A 100-character reply takes ~8–16 seconds total — indistinguishable from a real person.
 
 ---
 
 ## 🌐 Knowledge Sources
 
-The bot auto-fetches content from these sources on startup:
+The bot auto-fetches content from these sources on startup (all configurable in `config.py`):
 
-**Website Pages:**
-- `eabudakubat.com` — Main page + all 6 product pages + guide
+**Website Pages (8 URLs):**
+- Main page + all 6 product detail pages + guide page
 
-**GitHub READMEs:**
-- `EA_Budak_Ubat` — MT4 version
-- `EA_Budak_Ubat_MT5_Public` — MT5 version
-- Optional: BracketBlitz, MathEdge-Pro, Aligator-Gozaimasu, Encik-Moku, GoldMind-AI
+**GitHub READMEs (4 required + 5 optional):**
+- EA Budak Ubat MT4 & MT5, BracketBlitz, MathEdge Pro, Aligator Gozaimasu, Encik Moku, GoldMind AI
 
-Content is cached to `knowledge_cache.txt` for 1 hour to avoid re-fetching.
+Content is cached to `knowledge_cache.txt` for 1 hour. Delete the cache file to force a re-fetch.
 
 ---
 
@@ -151,7 +190,9 @@ Content is cached to `knowledge_cache.txt` for 1 hour to avoid re-fetching.
 |---|---|
 | **Private chats** | Always replies to the last unread message |
 | **EA Budak Ubat group** | Replies only when message contains: `ea`, `bot`, `syarief`, `broker`, `trading`, or `?` |
-| **All other groups** | Silently ignored |
+| **All other groups** | Silently ignored (logged as `"Ignoring non-allowed group"`) |
+
+To add more allowed groups, edit `ALLOWED_GROUP_NAMES` in `config.py`.
 
 ---
 
@@ -164,12 +205,11 @@ Content is cached to `knowledge_cache.txt` for 1 hour to avoid re-fetching.
 | `ANTHROPIC_API_KEY not set` | Add your key to `.env` |
 | `Rate limited by Anthropic` | Bot auto-waits 30s and retries |
 | `No readable incoming message found` | Normal — message may be image/sticker only |
+| Bot not replying to a new EA | Add the EA's URLs to `config.py` and delete `knowledge_cache.txt` |
 
 ---
 
 ## 📋 Log Format
-
-The bot prints timestamped, color-coded logs:
 
 ```
 [10:45:23] [Init]   Fetching product knowledge...
