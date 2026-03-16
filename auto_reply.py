@@ -554,14 +554,32 @@ async def switch_to_folder(page: Page, folder_name: str) -> bool:
     try:
         # Use JS to find the folder tab by its text content
         clicked = await page.evaluate(f"""() => {{
-            // Telegram Web K uses .tabs-tab elements inside a horizontal menu
-            const tabs = document.querySelectorAll(
-                '.tabs-tab, .menu-horizontal-div > li, .folder-tabs > span'
-            );
+            // Telegram Web K has a .folders-tabs-scrollable container
+            // The tabs themselves are usually .folder-tab, .chatlist-folder, or inside .menu-horizontal-div
+            // We search for elements with title or innerText matching the folder
+            const container = document.querySelector('.folders-tabs-scrollable, .folder-tabs, .chatlist-top');
+            if (!container) return false;
+            
+            // Try to find the tab by looking at all clickable elements inside the container
+            const tabs = container.querySelectorAll('.chatlist-folder, .folder-tab, div[role="tab"], span[role="tab"], div, span');
             for (const tab of tabs) {{
-                const text = tab.textContent.trim().toLowerCase();
-                if (text === '{folder_name.lower()}' || text.startsWith('{folder_name.lower()} ') || text.startsWith('{folder_name.lower()}\\n')) {{
-                    tab.click();
+                // Skip if it doesn't have a click handler or isn't a direct child-ish element
+                if (tab.children.length > 3) continue; 
+                
+                const text = Array.from(tab.childNodes)
+                    .filter(node => node.nodeType === Node.TEXT_NODE)
+                    .map(node => node.textContent.trim())
+                    .join('').toLowerCase();
+                    
+                if (text === '{folder_name.lower()}') {{
+                    // Found the exact text node! Click its parent block.
+                    // Telegram sometimes needs the parent to be clicked
+                    let clickTarget = tab;
+                    while (clickTarget && !clickTarget.classList.contains('chatlist-folder') && !clickTarget.classList.contains('active') && clickTarget !== container) {{
+                        if (clickTarget.onclick || getComputedStyle(clickTarget).cursor === 'pointer') break;
+                        clickTarget = clickTarget.parentElement;
+                    }}
+                    (clickTarget || tab).click();
                     return true;
                 }}
             }}
