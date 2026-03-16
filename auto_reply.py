@@ -50,6 +50,8 @@ KNOWLEDGE: str = ""
 credit_paused_until: float = 0  # Timestamp until which we pause API calls
 PROCESSED_CHAT_STATES: dict[str, str] = {}  # Tracks last seen chat preview to avoid infinite loops
 
+ACCOUNTS_FILE = Path("accounts.txt")
+
 supabase_client: Optional[Client] = None
 
 def init_supabase():
@@ -93,6 +95,94 @@ def save_chat_state(chat_name: str, subtitle: str):
             supabase_client.table('processed_chat_states').upsert({'chat_name': chat_name, 'subtitle': subtitle}).execute()
         except Exception:
             pass
+
+
+# ============================================================================
+# SECTION: ACCOUNT NUMBER CAPTURE
+# ============================================================================
+
+
+def load_accounts() -> dict[str, list[dict]]:
+    """Load saved accounts from accounts.txt as a dict keyed by chat_name."""
+    accounts: dict[str, list[dict]] = {}
+    if not ACCOUNTS_FILE.exists():
+        return accounts
+    for line in ACCOUNTS_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Format: chat_name | broker | account_number | timestamp
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) >= 3:
+            name = parts[0]
+            entry = {"broker": parts[1], "account": parts[2]}
+            if len(parts) >= 4:
+                entry["timestamp"] = parts[3]
+            accounts.setdefault(name, []).append(entry)
+    return accounts
+
+
+def save_account(chat_name: str, broker: str, account_number: str) -> None:
+    """Append a new account entry to accounts.txt (avoids duplicates)."""
+    existing = load_accounts()
+    # Check for duplicates
+    for entry in existing.get(chat_name, []):
+        if entry["account"] == account_number:
+            log("Account", f"Account {account_number} for {chat_name} already saved, skipping")
+            return
+    
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    line = f"{chat_name} | {broker} | {account_number} | {ts}\n"
+    with open(ACCOUNTS_FILE, "a", encoding="utf-8") as f:
+        f.write(line)
+    log("Account", f"Saved: {chat_name} → {broker} #{account_number}")
+
+
+def extract_accounts_from_text(text: str) -> list[tuple[str, str]]:
+    """Extract (broker, account_number) pairs from message text using regex.
+    Looks for patterns like 'xm 43195947', 'account 12345678', 'valetax 31018009' etc.
+    """
+    broker_names = [
+        "fisg", "cxm", "fbs", "headway", "forex4you", "octafx", "octafx",
+        "instaforex", "liteforex", "litefinance", "roboforex", "xm", "valetax",
+        "exness", "icmarkets", "tickmill", "fxpro", "lasforce"
+    ]
+    results = []
+    text_lower = text.lower()
+    
+    # Pattern 1: "broker_name account_number" (e.g. "xm 43195947")
+    for broker in broker_names:
+        pattern = rf'\b{broker}\s*[:#]?\s*(\d{{5,10}})\b'
+        for match in re.finditer(pattern, text_lower):
+            results.append((broker.upper(), match.group(1)))
+    
+    # Pattern 2: "account number: 12345678" or "acc no 12345678"
+    acc_pattern = r'(?:account|acc|akaun|no\.?\s*akaun|account\s*(?:number|no|num))\s*[:#]?\s*(\d{5,10})\b'
+    for match in re.finditer(acc_pattern, text_lower):
+        num = match.group(1)
+        # Try to find a nearby broker mention
+        nearby_broker = "Unknown"
+        for broker in broker_names:
+            if broker in text_lower:
+                nearby_broker = broker.upper()
+                break
+        # Avoid duplicate if already captured
+        if not any(n == num for _, n in results):
+            results.append((nearby_broker, num))
+    
+    return results
+
+
+def get_accounts_for_chat(chat_name: str) -> str:
+    """Get a summary of known accounts for a specific chat, for injection into the prompt."""
+    accounts = load_accounts()
+    entries = accounts.get(chat_name, [])
+    if not entries:
+        return ""
+    lines = []
+    for e in entries:
+        lines.append(f"  - Broker: {e['broker']}, Account: {e['account']}")
+    return "\n".join(lines)
 
 # ============================================================================
 # SECTION: LOGGING
@@ -219,12 +309,20 @@ async def fetch_all_knowledge() -> str:
 # ============================================================================
 
 
-def build_system_prompt() -> str:
-    """Build the full system prompt with injected knowledge."""
-    return SYSTEM_PROMPT_TEMPLATE.format(knowledge=KNOWLEDGE)
+def build_system_prompt(chat_name: str = "") -> str:
+    """Build the full system prompt with injected knowledge and account context."""
+    prompt = SYSTEM_PROMPT_TEMPLATE.format(knowledge=KNOWLEDGE)
+    
+    # Inject known account info for this chat so the AI doesn't re-ask
+    if chat_name:
+        account_info = get_accounts_for_chat(chat_name)
+        if account_info:
+            prompt += f"\n\nIMPORTANT — This customer has ALREADY provided their account number(s):\n{account_info}\nDo NOT ask for their account number again. Acknowledge that you already have it if relevant."
+    
+    return prompt
 
 
-async def generate_reply(message_text: str, api_key: str, base64_image: Optional[str] = None) -> Optional[str]:
+async def generate_reply(message_text: str, api_key: str, base64_image: Optional[str] = None, chat_name: str = "") -> Optional[str]:
     """Generate a reply using Claude claude-haiku-4-5-20251001.
     Optionally includes an image for vision processing.
     Returns reply text, None on failure, or 'CREDIT_ERROR' on billing issues.
@@ -266,7 +364,7 @@ async def generate_reply(message_text: str, api_key: str, base64_image: Optional
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=MAX_TOKENS_REPLY,
-            system=build_system_prompt(),
+            system=build_system_prompt(chat_name=chat_name),
             messages=[
                 {"role": "user", "content": content_items}
             ],
@@ -390,8 +488,8 @@ async def get_last_incoming_message(page: Page) -> tuple[Optional[str], Optional
             let history = [];
             let lastIncomingId = null;
             
-            // Only care about the last 15 messages for context
-            const recentNodes = Array.from(messageNodes).slice(-15);
+            // Only care about the last 30 messages for context
+            const recentNodes = Array.from(messageNodes).slice(-30);
             
             for (const node of recentNodes) {
                 const isOut = node.classList.contains('is-out') || node.classList.contains('message-out');
@@ -679,8 +777,13 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
         log("Wait", f"Simulating {delay:.1f}s reading time...")
         await asyncio.sleep(delay)
 
-        # Generate reply (pass the image if it exists)
-        reply = await generate_reply(message_text, api_key, base64_img)
+        # Extract and save any account numbers found in the conversation
+        account_pairs = extract_accounts_from_text(message_text)
+        for broker, acc_num in account_pairs:
+            save_account(chat_title, broker, acc_num)
+
+        # Generate reply (pass the image and chat name for account-aware context)
+        reply = await generate_reply(message_text, api_key, base64_img, chat_name=chat_title)
 
         if reply == "CREDIT_ERROR":
             # Don't mark as replied — we'll retry once credit is available
