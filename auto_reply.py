@@ -460,9 +460,26 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
             # Only skip if it clearly looks like a group name (long, has keywords)
             pass  # Can't reliably tell from name alone, proceed to click
 
-        # Click the chat to open it
-        await chat_element.click()
+        # Click the chat to open it (with timeout to avoid infinite retries)
+        try:
+            await chat_element.click(timeout=5000)
+        except Exception as click_err:
+            log("Skip", f"Could not click chat '{chat_name}': {type(click_err).__name__}")
+            return
         await asyncio.sleep(1.5)  # Wait for messages to load
+
+        # === FORUM GROUP DETECTION ===
+        # Forum-style groups (with topic channels) have a 'topics-slider' div
+        # that intercepts all clicks and causes infinite loops. Detect and escape.
+        try:
+            forum_indicator = await page.query_selector(".topics-slider, .forum-topics, .topics-container")
+            if forum_indicator:
+                log("Skip", f"Forum group detected (has topic channels): {chat_name}")
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.5)
+                return
+        except Exception:
+            pass
 
         # Get chat title and check if it's a group (now that we're inside)
         chat_title = await get_chat_title(page) or chat_name
