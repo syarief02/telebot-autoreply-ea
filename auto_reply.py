@@ -224,8 +224,9 @@ def build_system_prompt() -> str:
     return SYSTEM_PROMPT_TEMPLATE.format(knowledge=KNOWLEDGE)
 
 
-async def generate_reply(message_text: str, api_key: str) -> Optional[str]:
-    """Generate a reply using Claude claude-sonnet-4-20250514.
+async def generate_reply(message_text: str, api_key: str, base64_image: Optional[str] = None) -> Optional[str]:
+    """Generate a reply using Claude claude-3-5-sonnet-20241022.
+    Optionally includes an image for vision processing.
     Returns reply text, None on failure, or 'CREDIT_ERROR' on billing issues.
     """
     global credit_paused_until
@@ -238,12 +239,36 @@ async def generate_reply(message_text: str, api_key: str) -> Optional[str]:
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
+        # Build the dynamic payload
+        content_items = []
+        if base64_image and base64_image.startswith("data:image"):
+            # Format: 'data:image/jpeg;base64,/9j/4AAQSkZJRg...'
+            try:
+                media_type = base64_image.split(';')[0].split(':')[1]
+                data = base64_image.split(',')[1]
+                content_items.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data,
+                    }
+                })
+                log("AI", f"Attached image payload to prompt ({len(data)} bytes, {media_type})")
+            except Exception as e:
+                log("AI", f"Failed to parse base64 image: {e}")
+        
+        content_items.append({
+            "type": "text", 
+            "text": message_text
+        })
+        
         response = client.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=MAX_TOKENS_REPLY,
             system=build_system_prompt(),
             messages=[
-                {"role": "user", "content": message_text}
+                {"role": "user", "content": content_items}
             ],
         )
         reply = response.content[0].text.strip()
@@ -354,7 +379,7 @@ async def get_unread_chats(page: Page) -> list[tuple]:
         return []
 
 
-async def get_last_incoming_message(page: Page) -> tuple[Optional[str], Optional[str]]:
+async def get_last_incoming_message(page: Page) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Get the recent chat history and the unique ID of the last incoming message."""
     try:
         # Evaluate JS to grab the last 15 messages (both incoming and outgoing)
@@ -372,20 +397,33 @@ async def get_last_incoming_message(page: Page) -> tuple[Optional[str], Optional
                 const isOut = node.classList.contains('is-out') || node.classList.contains('message-out');
                 const isIn = node.classList.contains('is-in') || node.classList.contains('message-in') || node.matches(':not(.is-out):not(.message-out)');
                 
-                // Need text content to continue
+                // Need text or image content to continue
                 const textNode = node.querySelector('.translatable-message, .text-content');
-                if (!textNode) continue;
+                const imgNode = node.querySelector('img.media-photo');
                 
-                let text = textNode.innerText || textNode.textContent;
-                if (!text || !text.trim()) continue;
-                text = text.trim();
+                if (!textNode && !imgNode) continue;
                 
-                // Determine sender
-                const sender = isOut ? "You" : "Customer";
-                history.push(`${sender}: ${text}`);
+                let text = textNode ? (textNode.innerText || textNode.textContent) : "";
+                
+                // If it's an image and incoming, track the src
+                let imgSrc = null;
+                if (!isOut && imgNode && imgNode.src && imgNode.src.startsWith('blob:')) {
+                    imgSrc = imgNode.src;
+                }
+                if (text && text.trim()) {
+                    text = text.trim();
+                    const sender = isOut ? "You" : "Customer";
+                    history.push(`${sender}: ${text}`);
+                } else if (imgSrc) {
+                    const sender = "Customer";
+                    history.push(`${sender}: [Sent an image]`);
+                }
                 
                 if (!isOut) {
-                    lastIncomingId = node.getAttribute('data-mid') || node.getAttribute('data-message-id') || `text-${text.length}`;
+                    lastIncomingId = node.getAttribute('data-mid') || node.getAttribute('data-message-id') || `msg-${Math.random()}`;
+                    if (imgSrc) {
+                        lastIncomingId += `|img|${imgSrc}`; // Attach image src to ID for extraction
+                    }
                 }
             }
             
@@ -398,12 +436,40 @@ async def get_last_incoming_message(page: Page) -> tuple[Optional[str], Optional
         }''')
         
         if result and result.get("historyText") and result.get("lastId"):
-            return result["historyText"], str(result["lastId"])
+            history_text = result["historyText"]
+            last_id = str(result["lastId"])
+            
+            # Check if there's an image to extract from the last incoming message
+            base64_img = None
+            if "|img|" in last_id:
+                parts = last_id.split("|img|", 1)
+                last_id = parts[0]
+                blob_url = parts[1]
+                
+                log("Read", f"Found image in message ({blob_url}). Extracting Base64...")
+                
+                # We need to fetch the blob natively using page.evaluate
+                base64_img = await page.evaluate(f'''async (blobUrl) => {{
+                    try {{
+                        const response = await fetch(blobUrl);
+                        const blob = await response.blob();
+                        return new Promise((resolve, reject) => {{
+                            const reader = new FileReader();
+                            reader.onloadend = () => resolve(reader.result);
+                            reader.onerror = reject;
+                            reader.readAsDataURL(blob);
+                        }});
+                    }} catch (e) {{
+                        return null;
+                    }}
+                }}''', blob_url)
+                
+            return history_text, last_id, base64_img
             
     except Exception as e:
         log("Read", f"Failed to extract chat history: {e}")
         
-    return None, None
+    return None, None, None
 
 
 async def get_chat_title(page: Page) -> str:
@@ -580,8 +646,8 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
                 log("Skip", f"Ignoring non-allowed group: {chat_title}")
                 return
 
-        # Read the last incoming message
-        message_text, msg_id = await get_last_incoming_message(page)
+        # Read the last incoming message (and potentially fetch its image)
+        message_text, msg_id, base64_img = await get_last_incoming_message(page)
 
         if not message_text or not msg_id:
             log("Skip", "No readable incoming message found")
@@ -607,8 +673,8 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
         log("Wait", f"Simulating {delay:.1f}s reading time...")
         await asyncio.sleep(delay)
 
-        # Generate reply
-        reply = await generate_reply(message_text, api_key)
+        # Generate reply (pass the image if it exists)
+        reply = await generate_reply(message_text, api_key, base64_img)
 
         if reply == "CREDIT_ERROR":
             # Don't mark as replied — we'll retry once credit is available
