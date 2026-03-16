@@ -41,7 +41,10 @@ MAX_TOKENS_REPLY    = 500      # max tokens for Claude reply
 VERSION = "1.0.0"
 CACHE_FILE = Path("knowledge_cache.txt")
 
-# Group chat trigger keywords
+# Allowed group chats (only these groups get replies; all others are ignored)
+ALLOWED_GROUP_NAMES = ["ea budak ubat"]
+
+# Group chat trigger keywords (for allowed groups only)
 GROUP_TRIGGERS = {"ea", "bot", "syarief", "broker", "trading", "?"}
 
 # ============================================================================
@@ -384,6 +387,26 @@ async def get_last_incoming_message(page: Page) -> tuple[Optional[str], Optional
     return None, None
 
 
+async def get_chat_title(page: Page) -> str:
+    """Get the title/name of the currently open chat."""
+    selectors = [
+        ".chat-info .peer-title",
+        ".top .peer-title",
+        ".chat-title span",
+        ".chat-info-container .peer-title",
+    ]
+    for selector in selectors:
+        try:
+            el = await page.query_selector(selector)
+            if el:
+                title = await el.inner_text()
+                if title and title.strip():
+                    return title.strip()
+        except Exception:
+            continue
+    return ""
+
+
 async def is_group_chat(page: Page) -> bool:
     """Detect if the current chat is a group chat."""
     selectors = [
@@ -400,6 +423,12 @@ async def is_group_chat(page: Page) -> bool:
         except Exception:
             continue
     return False
+
+
+def is_allowed_group(chat_title: str) -> bool:
+    """Check if the group name matches one of the allowed groups."""
+    title_lower = chat_title.lower()
+    return any(name in title_lower for name in ALLOWED_GROUP_NAMES)
 
 
 def should_reply_in_group(message_text: str) -> bool:
@@ -459,8 +488,15 @@ async def process_chat(page: Page, chat_element, api_key: str) -> None:
         await chat_element.click()
         await asyncio.sleep(1.5)  # Wait for messages to load
 
-        # Check if group chat
+        # Get chat title and check if it's a group
+        chat_title = await get_chat_title(page)
         group = await is_group_chat(page)
+
+        # For group chats: only reply in allowed groups, ignore all others
+        if group:
+            if not is_allowed_group(chat_title):
+                log("Skip", f"Ignoring non-allowed group: {chat_title}")
+                return
 
         # Read the last incoming message
         message_text, msg_id = await get_last_incoming_message(page)
@@ -474,7 +510,7 @@ async def process_chat(page: Page, chat_element, api_key: str) -> None:
             log("Skip", f"Already replied to message {msg_id}")
             return
 
-        # For group chats, check trigger keywords
+        # For allowed group chats, also check trigger keywords
         if group and not should_reply_in_group(message_text):
             log("Skip", f"Group message doesn't match triggers: {message_text[:50]}")
             replied_messages.add(msg_id)
