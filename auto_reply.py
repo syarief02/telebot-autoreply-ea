@@ -46,6 +46,7 @@ CACHE_FILE = Path("knowledge_cache.txt")
 
 replied_messages: set[str] = set()
 KNOWLEDGE: str = ""
+credit_paused_until: float = 0  # Timestamp until which we pause API calls
 
 # ============================================================================
 # SECTION: LOGGING
@@ -178,7 +179,17 @@ def build_system_prompt() -> str:
 
 
 async def generate_reply(message_text: str, api_key: str) -> Optional[str]:
-    """Generate a reply using Claude claude-sonnet-4-20250514."""
+    """Generate a reply using Claude claude-sonnet-4-20250514.
+    Returns reply text, None on failure, or 'CREDIT_ERROR' on billing issues.
+    """
+    global credit_paused_until
+
+    # If we're in credit pause mode, don't even try
+    if time.time() < credit_paused_until:
+        remaining = int(credit_paused_until - time.time())
+        log("AI", f"Credit pause active. Waiting {remaining}s before retrying API...")
+        return "CREDIT_ERROR"
+
     try:
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
@@ -196,6 +207,18 @@ async def generate_reply(message_text: str, api_key: str) -> Optional[str]:
         log("AI", "Rate limited by Anthropic. Waiting 30s...")
         await asyncio.sleep(30)
         return None
+    except anthropic.BadRequestError as e:
+        error_msg = str(e)
+        if "credit" in error_msg.lower() or "balance" in error_msg.lower() or "billing" in error_msg.lower():
+            # Credit/billing error — pause ALL API calls for 5 minutes
+            credit_paused_until = time.time() + 300
+            log("AI", "⚠️ CREDIT ERROR: Your Anthropic credit balance is too low.")
+            log("AI", "   Pausing API calls for 5 minutes. Top up at platform.claude.com/settings/billing")
+            log("AI", "   The bot will keep scanning but won't make API calls until the pause ends.")
+            return "CREDIT_ERROR"
+        else:
+            log("AI", f"Error generating reply: {type(e).__name__}: {e}")
+            return None
     except Exception as e:
         log("AI", f"Error generating reply: {type(e).__name__}: {e}")
         return None
@@ -478,8 +501,16 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
 
         # Generate reply
         reply = await generate_reply(message_text, api_key)
+
+        if reply == "CREDIT_ERROR":
+            # Don't mark as replied — we'll retry once credit is available
+            log("Skip", "Skipping due to credit error (will retry later)")
+            return
+
         if not reply:
             log("Skip", "Failed to generate reply, skipping")
+            # Mark as replied to avoid retrying the same failed message
+            replied_messages.add(msg_id)
             return
 
         # Type and send
