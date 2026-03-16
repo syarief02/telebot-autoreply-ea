@@ -560,7 +560,7 @@ async def switch_to_folder(page: Page, folder_name: str) -> bool:
             );
             for (const tab of tabs) {{
                 const text = tab.textContent.trim().toLowerCase();
-                if (text === '{folder_name.lower()}') {{
+                if (text === '{folder_name.lower()}' || text.startsWith('{folder_name.lower()} ') || text.startsWith('{folder_name.lower()}\\n')) {{
                     tab.click();
                     return true;
                 }}
