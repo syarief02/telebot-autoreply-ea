@@ -225,7 +225,7 @@ def build_system_prompt() -> str:
 
 
 async def generate_reply(message_text: str, api_key: str, base64_image: Optional[str] = None) -> Optional[str]:
-    """Generate a reply using Claude claude-3-5-sonnet-20241022.
+    """Generate a reply using Claude claude-haiku-4-5-20251001.
     Optionally includes an image for vision processing.
     Returns reply text, None on failure, or 'CREDIT_ERROR' on billing issues.
     """
@@ -264,7 +264,7 @@ async def generate_reply(message_text: str, api_key: str, base64_image: Optional
         })
         
         response = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-haiku-4-5-20251001",
             max_tokens=MAX_TOKENS_REPLY,
             system=build_system_prompt(),
             messages=[
