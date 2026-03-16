@@ -261,11 +261,11 @@ async def get_unread_chats(page: Page) -> list[tuple]:
 
 async def get_last_incoming_message(page: Page) -> tuple[Optional[str], Optional[str]]:
     """Get the last incoming message text and its unique ID."""
-    # Find all message elements, filter out "is-out" (our own messages)
+    # Telegram Web K uses .bubble.is-in for incoming messages
     selectors = [
-        ".message:not(.is-out)",
+        ".bubble.is-in",
         ".bubble:not(.is-out)",
-        ".message-wrap:not(.is-out)",
+        ".message:not(.is-out)",
     ]
     for selector in selectors:
         try:
@@ -274,28 +274,37 @@ async def get_last_incoming_message(page: Page) -> tuple[Optional[str], Optional
                 continue
             # Get the last incoming message
             last_msg = messages[-1]
-            # Extract message ID
+            # Extract message ID (Telegram Web K uses data-mid)
             msg_id = await last_msg.get_attribute("data-mid") or \
                      await last_msg.get_attribute("data-message-id") or \
                      await last_msg.get_attribute("data-msg-id")
+
+            # Extract text content — Telegram Web K nests text in .translatable-message
+            text_selectors = [
+                ".translatable-message",
+                ".text-content",
+                ".message .text-content",
+                ".message .translatable-message",
+                ".message",
+            ]
+            text = None
+            for ts in text_selectors:
+                text_el = await last_msg.query_selector(ts)
+                if text_el:
+                    text = await text_el.inner_text()
+                    if text and text.strip():
+                        text = text.strip()
+                        break
+                    text = None
+
             if not msg_id:
-                # Generate a fallback ID from content
-                text_el = await last_msg.query_selector(
-                    ".message-content .text-content, .message .text, .message-text"
-                )
-                text = await text_el.inner_text() if text_el else None
                 if text:
                     msg_id = f"text-{hash(text)}"
                 else:
                     continue
-            else:
-                text_el = await last_msg.query_selector(
-                    ".message-content .text-content, .message .text, .message-text"
-                )
-                text = await text_el.inner_text() if text_el else None
 
-            if text and text.strip():
-                return text.strip(), str(msg_id)
+            if text:
+                return text, str(msg_id)
         except Exception as e:
             log("Read", f"Selector '{selector}' failed: {e}")
             continue
@@ -307,7 +316,6 @@ async def get_chat_title(page: Page) -> str:
     selectors = [
         ".chat-info .peer-title",
         ".top .peer-title",
-        ".chat-title span",
         ".chat-info-container .peer-title",
     ]
     for selector in selectors:
@@ -323,12 +331,26 @@ async def get_chat_title(page: Page) -> str:
 
 
 async def is_group_chat(page: Page) -> bool:
-    """Detect if the current chat is a group chat."""
+    """Detect if the current chat is a group/channel (not a private chat).
+    Checks the chat header subtitle for 'member' keyword.
+    """
+    try:
+        # Telegram Web K shows "X members, Y online" in the subtitle for groups
+        result = await page.evaluate("""() => {
+            const subtitle = document.querySelector('.chat-info .info .subtitle, .chat-info .info, .chat-info .subtitle');
+            if (subtitle) {
+                const text = subtitle.textContent.toLowerCase();
+                return text.includes('member') || text.includes('subscriber');
+            }
+            return false;
+        }""")
+        return bool(result)
+    except Exception:
+        pass
+    # Fallback: check for known group indicators
     selectors = [
         ".chat-info .members-count",
         ".chat-info .group-info",
-        ".profile-subtitle:has-text('members')",
-        ".chat-title .group",
     ]
     for selector in selectors:
         try:
