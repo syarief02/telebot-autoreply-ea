@@ -17,6 +17,12 @@ KNOWLEDGE_CACHE_TTL = 3600     # cache TTL in seconds (1 hour)
 MAX_CHARS_PER_SOURCE = 4000   # max chars to extract per URL
 MAX_TOKENS_REPLY    = 500      # max tokens for Claude reply
 
+# Which Telegram folder tabs to scan for unread messages.
+# The bot will click each folder tab and scan for unread chats.
+# Use exact folder names as they appear in your Telegram (case-insensitive).
+# Set to ["All"] to scan everything (not recommended — too much noise).
+SCAN_FOLDERS = ["Personal", "Unread"]
+
 # ============================================================================
 # BROWSER SETTINGS
 # ============================================================================

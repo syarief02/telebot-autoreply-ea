@@ -34,7 +34,7 @@ from config import (
     TYPING_SPEED, KNOWLEDGE_CACHE_TTL, MAX_CHARS_PER_SOURCE, MAX_TOKENS_REPLY,
     ALLOWED_GROUP_NAMES, GROUP_TRIGGERS,
     WEBSITE_URLS, GITHUB_URLS, GITHUB_OPTIONAL_URLS,
-    SYSTEM_PROMPT_TEMPLATE,
+    SYSTEM_PROMPT_TEMPLATE, SCAN_FOLDERS,
 )
 
 VERSION = "1.1.0"
@@ -547,10 +547,44 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
 # ============================================================================
 
 
+async def switch_to_folder(page: Page, folder_name: str) -> bool:
+    """Click a Telegram folder tab (e.g. 'Personal', 'Unread').
+    Returns True if the folder was found and clicked.
+    """
+    try:
+        # Use JS to find the folder tab by its text content
+        clicked = await page.evaluate(f"""() => {{
+            // Telegram Web K uses .tabs-tab elements inside a horizontal menu
+            const tabs = document.querySelectorAll(
+                '.tabs-tab, .menu-horizontal-div > li, .folder-tabs > span'
+            );
+            for (const tab of tabs) {{
+                const text = tab.textContent.trim().toLowerCase();
+                if (text === '{folder_name.lower()}') {{
+                    tab.click();
+                    return true;
+                }}
+            }}
+            return false;
+        }}""")
+        if clicked:
+            log("Folder", f"Switched to '{folder_name}' folder")
+            await asyncio.sleep(1)  # Wait for chatlist to refresh
+            return True
+        else:
+            log("Folder", f"Could not find '{folder_name}' folder tab")
+            return False
+    except Exception as e:
+        log("Folder", f"Error switching to '{folder_name}': {e}")
+        return False
+
+
 async def main_loop(page: Page, api_key: str) -> None:
-    """Main scanning loop — checks for unread chats and processes them."""
+    """Main scanning loop — scans configured folder tabs for unread chats."""
     consecutive_errors = 0
     max_consecutive_errors = 10
+
+    log("Info", f"Scanning folders: {', '.join(SCAN_FOLDERS)}")
 
     while True:
         try:
@@ -562,15 +596,22 @@ async def main_loop(page: Page, api_key: str) -> None:
                 await asyncio.sleep(10)
                 continue
 
-            # Scan for unread chats
-            unread_chats = await get_unread_chats(page)
+            # Scan each configured folder tab
+            total_found = 0
+            for folder in SCAN_FOLDERS:
+                # Switch to the target folder tab
+                switched = await switch_to_folder(page, folder)
+                if not switched:
+                    continue
 
-            if unread_chats:
-                log("Info", f"Found {len(unread_chats)} unread chat(s)")
-                for chat_element, chat_name in unread_chats:
-                    await process_chat(page, chat_element, chat_name, api_key)
-            else:
-                pass  # Silent when no unread — avoid log spam
+                # Scan for unread chats in this folder
+                unread_chats = await get_unread_chats(page)
+
+                if unread_chats:
+                    total_found += len(unread_chats)
+                    log("Info", f"Found {len(unread_chats)} unread chat(s) in '{folder}'")
+                    for chat_element, chat_name in unread_chats:
+                        await process_chat(page, chat_element, chat_name, api_key)
 
             consecutive_errors = 0
             await asyncio.sleep(CHECK_INTERVAL)
