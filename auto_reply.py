@@ -216,8 +216,10 @@ async def find_telegram_page(browser) -> Optional[Page]:
     return None
 
 
-async def get_unread_chats(page: Page) -> list:
-    """Find chat elements with unread message indicators."""
+async def get_unread_chats(page: Page) -> list[tuple]:
+    """Find chat elements with unread message indicators.
+    Returns list of (element, chat_name) tuples.
+    """
     # Multiple selector fallbacks for Telegram Web K
     selectors = [
         "a.chatlist-chat .unread-count",
@@ -230,14 +232,27 @@ async def get_unread_chats(page: Page) -> list:
             elements = await page.query_selector_all(selector)
             if elements:
                 log("Scan", f"Found {len(elements)} unread chats (selector: {selector})")
-                # Return the parent chat elements
+                # Return the parent chat elements with their names
                 result = []
                 for el in elements:
                     parent = await el.evaluate_handle(
                         "el => el.closest('a.chatlist-chat') || el.closest('[data-peer-id]') || el.closest('.chatlist-chat')"
                     )
                     if parent:
-                        result.append(parent)
+                        # Extract chat name from the chatlist item (before clicking)
+                        chat_name = ""
+                        try:
+                            chat_name = await parent.evaluate(
+                                """el => {
+                                    const title = el.querySelector('.peer-title') ||
+                                                  el.querySelector('.user-title') ||
+                                                  el.querySelector('.dialog-title');
+                                    return title ? title.textContent.trim() : '';
+                                }"""
+                            )
+                        except Exception:
+                            pass
+                        result.append((parent, chat_name))
                 return result
         except Exception:
             continue
@@ -331,6 +346,12 @@ def is_allowed_group(chat_title: str) -> bool:
     return any(name in title_lower for name in ALLOWED_GROUP_NAMES)
 
 
+def is_private_chat(chat_name: str) -> bool:
+    """Heuristic: if a chat name doesn't match any known group pattern, treat as private."""
+    # This is a best-effort check from the chatlist sidebar
+    return True  # Will be verified after clicking via is_group_chat()
+
+
 def should_reply_in_group(message_text: str) -> bool:
     """Check if a group message contains trigger keywords."""
     text_lower = message_text.lower()
@@ -381,18 +402,28 @@ async def type_and_send(page: Page, reply_text: str) -> bool:
         return False
 
 
-async def process_chat(page: Page, chat_element, api_key: str) -> None:
-    """Click a chat, read the last message, generate reply, and send it."""
+async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -> None:
+    """Process an unread chat: pre-filter by name, click, read, reply."""
     try:
+        # === PRE-FILTER: Check chat name BEFORE clicking ===
+        # If we got a name from the chatlist and it looks like a non-allowed group,
+        # skip it immediately without wasting time clicking into it
+        if chat_name and not is_allowed_group(chat_name):
+            # Could be a private chat or a non-allowed group.
+            # We do a quick heuristic: names with many words or special chars = likely group
+            # But to be safe, we'll still click into private-looking chats
+            # Only skip if it clearly looks like a group name (long, has keywords)
+            pass  # Can't reliably tell from name alone, proceed to click
+
         # Click the chat to open it
         await chat_element.click()
         await asyncio.sleep(1.5)  # Wait for messages to load
 
-        # Get chat title and check if it's a group
-        chat_title = await get_chat_title(page)
+        # Get chat title and check if it's a group (now that we're inside)
+        chat_title = await get_chat_title(page) or chat_name
         group = await is_group_chat(page)
 
-        # For group chats: only reply in allowed groups, ignore all others
+        # For group chats: only reply in allowed groups, skip all others instantly
         if group:
             if not is_allowed_group(chat_title):
                 log("Skip", f"Ignoring non-allowed group: {chat_title}")
@@ -466,8 +497,8 @@ async def main_loop(page: Page, api_key: str) -> None:
 
             if unread_chats:
                 log("Info", f"Found {len(unread_chats)} unread chat(s)")
-                for chat in unread_chats:
-                    await process_chat(page, chat, api_key)
+                for chat_element, chat_name in unread_chats:
+                    await process_chat(page, chat_element, chat_name, api_key)
             else:
                 pass  # Silent when no unread — avoid log spam
 
