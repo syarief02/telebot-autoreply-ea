@@ -472,8 +472,19 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
         # Forum-style groups (with topic channels) have a 'topics-slider' div
         # that intercepts all clicks and causes infinite loops. Detect and escape.
         try:
-            # Wait a tiny bit for the middle column to render
-            await asyncio.sleep(1)
+            # Wait for either the chat input box or the forum topics container to appear
+            # This handles slow network loading of the chat column
+            try:
+                await page.wait_for_selector(
+                    ".chat-input-control, .message-input, .Transition_slide .forum-topics, .Transition_slide .topics-container",
+                    state="attached",
+                    timeout=5000
+                )
+            except Exception:
+                log("Skip", f"Chat panel didn't load properly for {chat_name}")
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.5)
+                return
             
             # Check if there is an active message input or a normal message list in the center panel
             has_input = await page.evaluate("() => !!document.querySelector('.chat-input-control, .message-input')")
@@ -555,16 +566,14 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
 
 async def switch_to_folder(page: Page, folder_name: str) -> bool:
     """Click a Telegram folder tab (e.g. 'Personal', 'Unread').
-    Returns True if the folder was found and clicked.
+    Returns True if the folder was found and clicked, or already active.
     """
     try:
         # Use JS to find the folder tab by its text content
         clicked = await page.evaluate(f"""() => {{
             // Telegram Web K has a .folders-tabs-scrollable container
-            // The tabs themselves are usually .folder-tab, .chatlist-folder, or inside .menu-horizontal-div
-            // We search for elements with title or innerText matching the folder
             const container = document.querySelector('.folders-tabs-scrollable, .folder-tabs, .chatlist-top');
-            if (!container) return false;
+            if (!container) return 'NOT_FOUND';
             
             // Try to find the tab by looking at all clickable elements inside the container
             const tabs = container.querySelectorAll('.chatlist-folder, .folder-tab, div[role="tab"], span[role="tab"], div, span');
@@ -578,23 +587,34 @@ async def switch_to_folder(page: Page, folder_name: str) -> bool:
                     .join('').toLowerCase();
                     
                 if (text === '{folder_name.lower()}') {{
+                    // Check if it's already active!
+                    let is_active = false;
+                    let checkNode = tab;
+                    for (let i = 0; i < 3 && checkNode; i++) {{
+                        if (checkNode.classList && checkNode.classList.contains('active')) is_active = true;
+                        checkNode = checkNode.parentElement;
+                    }}
+                    
+                    if (is_active) return 'ALREADY_ACTIVE';
+                    
                     // Found the exact text node! Click its parent block.
-                    // Telegram sometimes needs the parent to be clicked
                     let clickTarget = tab;
                     while (clickTarget && !clickTarget.classList.contains('chatlist-folder') && !clickTarget.classList.contains('active') && clickTarget !== container) {{
                         if (clickTarget.onclick || getComputedStyle(clickTarget).cursor === 'pointer') break;
                         clickTarget = clickTarget.parentElement;
                     }}
                     (clickTarget || tab).click();
-                    return true;
+                    return 'CLICKED';
                 }}
             }}
-            return false;
+            return 'NOT_FOUND';
         }}""")
-        if clicked:
+        if clicked == 'CLICKED':
             log("Folder", f"Switched to '{folder_name}' folder")
             await asyncio.sleep(1)  # Wait for chatlist to refresh
             return True
+        elif clicked == 'ALREADY_ACTIVE':
+            return True # Successfully kept in the same folder
         else:
             log("Folder", f"Could not find '{folder_name}' folder tab")
             return False
@@ -609,6 +629,9 @@ async def main_loop(page: Page, api_key: str) -> None:
     max_consecutive_errors = 10
 
     log("Info", f"Scanning folders: {', '.join(SCAN_FOLDERS)}")
+    
+    current_folder_idx = 0
+    loops_in_folder = 0
 
     while True:
         try:
@@ -620,22 +643,26 @@ async def main_loop(page: Page, api_key: str) -> None:
                 await asyncio.sleep(10)
                 continue
 
-            # Scan each configured folder tab
-            total_found = 0
-            for folder in SCAN_FOLDERS:
-                # Switch to the target folder tab
-                switched = await switch_to_folder(page, folder)
-                if not switched:
-                    continue
-
+            # Process the current folder instead of switching wildly
+            folder = SCAN_FOLDERS[current_folder_idx]
+            switched = await switch_to_folder(page, folder)
+            
+            if switched:
                 # Scan for unread chats in this folder
                 unread_chats = await get_unread_chats(page)
 
                 if unread_chats:
-                    total_found += len(unread_chats)
                     log("Info", f"Found {len(unread_chats)} unread chat(s) in '{folder}'")
                     for chat_element, chat_name in unread_chats:
                         await process_chat(page, chat_element, chat_name, api_key)
+                    loops_in_folder = 0 # Had activity, restart clock for staying in this folder
+
+            loops_in_folder += 1
+            
+            # Switch folder every 6 loops (approx 30s) if we have multiple folders
+            if len(SCAN_FOLDERS) > 1 and loops_in_folder >= 6:
+                current_folder_idx = (current_folder_idx + 1) % len(SCAN_FOLDERS)
+                loops_in_folder = 0
 
             consecutive_errors = 0
             await asyncio.sleep(CHECK_INTERVAL)
