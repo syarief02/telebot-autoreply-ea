@@ -26,6 +26,7 @@ import httpx
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, Page, BrowserContext
+from supabase import create_client, Client
 
 # Import all config from config.py
 from config import (
@@ -48,6 +49,50 @@ replied_messages: set[str] = set()
 KNOWLEDGE: str = ""
 credit_paused_until: float = 0  # Timestamp until which we pause API calls
 PROCESSED_CHAT_STATES: dict[str, str] = {}  # Tracks last seen chat preview to avoid infinite loops
+
+supabase_client: Optional[Client] = None
+
+def init_supabase():
+    global supabase_client, replied_messages, PROCESSED_CHAT_STATES
+    url = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY") or os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    if url and key:
+        try:
+            supabase_client = create_client(url, key)
+            log("Supabase", "Connected to Supabase")
+            # Load initial state
+            try:
+                msg_resp = supabase_client.table('replied_messages').select('message_id').execute()
+                for row in msg_resp.data:
+                    replied_messages.add(row['message_id'])
+                
+                state_resp = supabase_client.table('processed_chat_states').select('*').execute()
+                for row in state_resp.data:
+                    PROCESSED_CHAT_STATES[row['chat_name']] = row['subtitle']
+                log("Supabase", f"Loaded {len(replied_messages)} messages and {len(PROCESSED_CHAT_STATES)} chat states")
+            except Exception as e:
+                log("Supabase", f"Error loading data (tables might not exist): {e}")
+        except Exception as e:
+            log("Supabase", f"Initialization failed: {e}")
+            supabase_client = None
+    else:
+        log("Supabase", "No SUPABASE_URL or SUPABASE_KEY found. Using memory-only state.")
+
+def save_replied_message(msg_id: str):
+    replied_messages.add(msg_id)
+    if supabase_client:
+        try:
+            supabase_client.table('replied_messages').upsert({'message_id': msg_id}).execute()
+        except Exception:
+            pass
+
+def save_chat_state(chat_name: str, subtitle: str):
+    PROCESSED_CHAT_STATES[chat_name] = subtitle
+    if supabase_client:
+        try:
+            supabase_client.table('processed_chat_states').upsert({'chat_name': chat_name, 'subtitle': subtitle}).execute()
+        except Exception:
+            pass
 
 # ============================================================================
 # SECTION: LOGGING
@@ -194,7 +239,7 @@ async def generate_reply(message_text: str, api_key: str) -> Optional[str]:
     try:
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-3-5-sonnet-20241022",
             max_tokens=MAX_TOKENS_REPLY,
             system=build_system_prompt(),
             messages=[
@@ -551,7 +596,7 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
         if group and not should_reply_in_group(message_text):
             preview = message_text.replace('\\n', ' ')[:50]
             log("Skip", f"Group message doesn't match triggers: {preview}")
-            replied_messages.add(msg_id)
+            save_replied_message(msg_id)
             return
 
         preview = message_text.replace('\\n', ' ')[:60]
@@ -573,13 +618,13 @@ async def process_chat(page: Page, chat_element, chat_name: str, api_key: str) -
         if not reply:
             log("Skip", "Failed to generate reply, skipping")
             # Mark as replied to avoid retrying the same failed message
-            replied_messages.add(msg_id)
+            save_replied_message(msg_id)
             return
 
         # Type and send
         success = await type_and_send(page, reply)
         if success:
-            replied_messages.add(msg_id)
+            save_replied_message(msg_id)
 
         # Wait before moving to next chat
         await asyncio.sleep(random.uniform(1, 3))
@@ -685,7 +730,7 @@ async def main_loop(page: Page, api_key: str) -> None:
                     for chat_element, chat_name, subtitle in unread_chats:
                         await process_chat(page, chat_element, chat_name, api_key)
                         # Record state so we don't endlessly loop un-repliable messages
-                        PROCESSED_CHAT_STATES[chat_name] = subtitle
+                        save_chat_state(chat_name, subtitle)
                     loops_in_folder = 0 # Had activity, restart clock for staying in this folder
 
             loops_in_folder += 1
@@ -752,6 +797,10 @@ async def run() -> None:
         sys.exit(1)
 
     print_banner()
+
+    # Init database
+    log("Init", "Initializing database state...")
+    init_supabase()
 
     # Fetch knowledge
     log("Init", "Fetching product knowledge...")
