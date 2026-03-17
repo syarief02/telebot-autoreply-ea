@@ -6,6 +6,17 @@ or update the system prompt. No need to touch auto_reply.py.
 """
 
 # ============================================================================
+# AI PROVIDER SETTINGS
+# ============================================================================
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+AI_PROVIDER      = os.getenv("AI_PROVIDER", "anthropic").strip().lower()  # "anthropic" or "openai"
+ANTHROPIC_MODEL  = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001").strip()
+OPENAI_MODEL     = os.getenv("OPENAI_MODEL", "gpt-5.4").strip()
+
+# ============================================================================
 # BOT SETTINGS
 # ============================================================================
 

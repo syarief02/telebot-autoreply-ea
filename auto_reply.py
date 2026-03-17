@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 import anthropic
+import openai
 import httpx
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -36,6 +37,7 @@ from config import (
     ALLOWED_GROUP_NAMES, GROUP_TRIGGERS,
     WEBSITE_URLS, GITHUB_URLS, GITHUB_OPTIONAL_URLS,
     SYSTEM_PROMPT_TEMPLATE, SCAN_FOLDERS,
+    AI_PROVIDER, ANTHROPIC_MODEL, OPENAI_MODEL,
 )
 
 VERSION = "1.1.0"
@@ -324,13 +326,20 @@ def build_system_prompt(chat_name: str = "") -> str:
 
 
 async def generate_reply(message_text: str, api_key: str, base64_image: Optional[str] = None, chat_name: str = "") -> Optional[str]:
-    """Generate a reply using Claude claude-haiku-4-5-20251001.
-    Optionally includes an image for vision processing.
+    """Generate a reply using the configured AI provider.
+    Dispatches to Anthropic Claude or OpenAI GPT based on AI_PROVIDER config.
     Returns reply text, None on failure, or 'CREDIT_ERROR' on billing issues.
     """
+    if AI_PROVIDER == "openai":
+        return await _generate_reply_openai(message_text, api_key, base64_image, chat_name)
+    else:
+        return await _generate_reply_anthropic(message_text, api_key, base64_image, chat_name)
+
+
+async def _generate_reply_anthropic(message_text: str, api_key: str, base64_image: Optional[str] = None, chat_name: str = "") -> Optional[str]:
+    """Generate a reply using Anthropic Claude."""
     global credit_paused_until
 
-    # If we're in credit pause mode, don't even try
     if time.time() < credit_paused_until:
         remaining = int(credit_paused_until - time.time())
         log("AI", f"Credit pause active. Waiting {remaining}s before retrying API...")
@@ -338,10 +347,8 @@ async def generate_reply(message_text: str, api_key: str, base64_image: Optional
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
-        # Build the dynamic payload
         content_items = []
         if base64_image and base64_image.startswith("data:image"):
-            # Format: 'data:image/jpeg;base64,/9j/4AAQSkZJRg...'
             try:
                 media_type = base64_image.split(';')[0].split(':')[1]
                 data = base64_image.split(',')[1]
@@ -357,21 +364,16 @@ async def generate_reply(message_text: str, api_key: str, base64_image: Optional
             except Exception as e:
                 log("AI", f"Failed to parse base64 image: {e}")
         
-        content_items.append({
-            "type": "text", 
-            "text": message_text
-        })
+        content_items.append({"type": "text", "text": message_text})
         
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=ANTHROPIC_MODEL,
             max_tokens=MAX_TOKENS_REPLY,
             system=build_system_prompt(chat_name=chat_name),
-            messages=[
-                {"role": "user", "content": content_items}
-            ],
+            messages=[{"role": "user", "content": content_items}],
         )
         reply = response.content[0].text.strip()
-        log("AI", f"Generated reply ({len(reply)} chars)")
+        log("AI", f"Generated reply via Anthropic/{ANTHROPIC_MODEL} ({len(reply)} chars)")
         return reply
     except anthropic.RateLimitError:
         log("AI", "Rate limited by Anthropic. Waiting 30s...")
@@ -380,10 +382,65 @@ async def generate_reply(message_text: str, api_key: str, base64_image: Optional
     except anthropic.BadRequestError as e:
         error_msg = str(e)
         if "credit" in error_msg.lower() or "balance" in error_msg.lower() or "billing" in error_msg.lower():
-            # Credit/billing error — pause ALL API calls for 5 minutes
             credit_paused_until = time.time() + 300
             log("AI", "⚠️ CREDIT ERROR: Your Anthropic credit balance is too low.")
             log("AI", "   Pausing API calls for 5 minutes. Top up at platform.claude.com/settings/billing")
+            log("AI", "   The bot will keep scanning but won't make API calls until the pause ends.")
+            return "CREDIT_ERROR"
+        else:
+            log("AI", f"Error generating reply: {type(e).__name__}: {e}")
+            return None
+    except Exception as e:
+        log("AI", f"Error generating reply: {type(e).__name__}: {e}")
+        return None
+
+
+async def _generate_reply_openai(message_text: str, api_key: str, base64_image: Optional[str] = None, chat_name: str = "") -> Optional[str]:
+    """Generate a reply using OpenAI GPT."""
+    global credit_paused_until
+
+    if time.time() < credit_paused_until:
+        remaining = int(credit_paused_until - time.time())
+        log("AI", f"Credit pause active. Waiting {remaining}s before retrying API...")
+        return "CREDIT_ERROR"
+
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        # Build the user message content
+        content_items = []
+        if base64_image and base64_image.startswith("data:image"):
+            try:
+                content_items.append({
+                    "type": "image_url",
+                    "image_url": {"url": base64_image, "detail": "low"},
+                })
+                log("AI", f"Attached image payload to prompt ({len(base64_image)} bytes)")
+            except Exception as e:
+                log("AI", f"Failed to parse base64 image: {e}")
+        
+        content_items.append({"type": "text", "text": message_text})
+        
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            max_tokens=MAX_TOKENS_REPLY,
+            messages=[
+                {"role": "system", "content": build_system_prompt(chat_name=chat_name)},
+                {"role": "user", "content": content_items},
+            ],
+        )
+        reply = response.choices[0].message.content.strip()
+        log("AI", f"Generated reply via OpenAI/{OPENAI_MODEL} ({len(reply)} chars)")
+        return reply
+    except openai.RateLimitError:
+        log("AI", "Rate limited by OpenAI. Waiting 30s...")
+        await asyncio.sleep(30)
+        return None
+    except openai.BadRequestError as e:
+        error_msg = str(e)
+        if "billing" in error_msg.lower() or "quota" in error_msg.lower() or "insufficient" in error_msg.lower():
+            credit_paused_until = time.time() + 300
+            log("AI", "⚠️ BILLING ERROR: Your OpenAI account has insufficient credits.")
+            log("AI", "   Pausing API calls for 5 minutes. Top up at platform.openai.com/settings/billing")
             log("AI", "   The bot will keep scanning but won't make API calls until the pause ends.")
             return "CREDIT_ERROR"
         else:
@@ -961,18 +1018,32 @@ async def run() -> None:
     """Main entry point — fetch knowledge, connect to browser, start loop."""
     load_dotenv()
 
-    # Validate API key
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if not api_key or api_key == "your_api_key_here":
-        print()
-        print("[ERROR] ANTHROPIC_API_KEY not set!")
-        print("        1. Open .env file")
-        print("        2. Replace 'your_api_key_here' with your actual key")
-        print("        3. Get a key at https://console.anthropic.com/")
-        print()
-        sys.exit(1)
+    # Validate the correct API key based on selected provider
+    if AI_PROVIDER == "openai":
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not api_key or api_key == "your_api_key_here":
+            print()
+            print("[ERROR] OPENAI_API_KEY not set!")
+            print("        1. Open .env file")
+            print("        2. Set OPENAI_API_KEY to your actual key")
+            print("        3. Get a key at https://platform.openai.com/")
+            print()
+            sys.exit(1)
+        provider_label = f"OpenAI / {OPENAI_MODEL}"
+    else:
+        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if not api_key or api_key == "your_api_key_here":
+            print()
+            print("[ERROR] ANTHROPIC_API_KEY not set!")
+            print("        1. Open .env file")
+            print("        2. Replace 'your_api_key_here' with your actual key")
+            print("        3. Get a key at https://console.anthropic.com/")
+            print()
+            sys.exit(1)
+        provider_label = f"Anthropic / {ANTHROPIC_MODEL}"
 
     print_banner()
+    log("Init", f"AI Provider: {provider_label}")
 
     # Init database
     log("Init", "Initializing database state...")
