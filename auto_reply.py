@@ -422,7 +422,7 @@ async def _generate_reply_openai(message_text: str, api_key: str, base64_image: 
         
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
-            max_tokens=MAX_TOKENS_REPLY,
+            max_completion_tokens=MAX_TOKENS_REPLY,
             messages=[
                 {"role": "system", "content": build_system_prompt(chat_name=chat_name)},
                 {"role": "user", "content": content_items},
