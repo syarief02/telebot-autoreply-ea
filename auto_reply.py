@@ -420,15 +420,29 @@ async def _generate_reply_openai(message_text: str, api_key: str, base64_image: 
         
         content_items.append({"type": "text", "text": message_text})
         
+        # Reasoning models (gpt-5-mini, o-series, etc.) use internal thinking tokens
+        # that count against max_completion_tokens. We need a much larger budget
+        # than MAX_TOKENS_REPLY to allow room for both reasoning and the reply.
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
-            max_completion_tokens=MAX_TOKENS_REPLY,
+            max_completion_tokens=16384,
             messages=[
                 {"role": "system", "content": build_system_prompt(chat_name=chat_name)},
                 {"role": "user", "content": content_items},
             ],
         )
-        reply = response.choices[0].message.content.strip()
+        choice = response.choices[0]
+        finish_reason = choice.finish_reason
+        raw_content = choice.message.content
+        refusal = getattr(choice.message, 'refusal', None)
+        
+        log("AI", f"OpenAI response — finish_reason: {finish_reason}, content_len: {len(raw_content) if raw_content else 0}, refusal: {refusal}")
+        
+        if not raw_content:
+            log("AI", f"Empty response from OpenAI. Full choice: {choice}")
+            return None
+        
+        reply = raw_content.strip()
         log("AI", f"Generated reply via OpenAI/{OPENAI_MODEL} ({len(reply)} chars)")
         return reply
     except openai.RateLimitError:
