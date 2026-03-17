@@ -1,6 +1,6 @@
 # TeleBot Autoreply EA (EA Budak Ubat)
 
-An advanced, human-like automated Telegram reply bot built to run on your personal Telegram account. Designed to handle customer inquiries related to the **EA Budak Ubat** trading system using the Anthropic Claude API.
+An advanced, human-like automated Telegram reply bot built to run on your personal Telegram account. Designed to handle customer inquiries related to the **EA Budak Ubat** trading system using **interchangeable AI providers** — switch between Anthropic Claude and OpenAI GPT with a single `.env` toggle.
 
 Instead of using the standard Telegram Bot API (which requires a `@bot` account), this bot works directly on your **Telegram Web K** session using Playwright. It reads the DOM, types out responses character by character, and mimics real human behavior — making it indistinguishable from a real person.
 
@@ -14,6 +14,7 @@ Instead of using the standard Telegram Bot API (which requires a `@bot` account)
 * **Unreplied Chat Detection:** Finds chats from today that haven't been replied to yet, even if they don't show an unread badge.
 
 ### 🧠 AI-Powered Replies
+* **Interchangeable AI Provider:** Switch between **Anthropic Claude** and **OpenAI GPT** via a single `AI_PROVIDER` setting in `.env`. Supports Claude Haiku/Sonnet/Opus and GPT-5/GPT-5-mini/GPT-4o.
 * **Context-Aware AI:** Reads the last **30 messages** of conversation history to generate accurate, context-specific replies.
 * **Natural Persona:** Replies like a real human friend — casual, empathetic, and humorous. No robotic customer-service tone.
 * **Anti-Repetition:** Never repeats the same joke or phrase twice in a conversation. Each reply is fresh and relevant.
@@ -36,14 +37,22 @@ Instead of using the standard Telegram Bot API (which requires a `@bot` account)
 1. **Windows 10/11**
 2. **Python 3.10+**
 3. **Brave Browser** (installed at `C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe`)
-4. An **Anthropic API Key** (for Claude) — get one at [console.anthropic.com](https://console.anthropic.com/)
+4. An **AI API Key** — choose one or both:
+   - **Anthropic:** [console.anthropic.com](https://console.anthropic.com/)
+   - **OpenAI:** [platform.openai.com](https://platform.openai.com/)
 
 ## 🚀 Setup Instructions
 
-### 1. Configure the API Key
+### 1. Configure the AI Provider
 1. Rename `.env.example` to `.env`.
-2. Open `.env` and replace `your_api_key_here` with your Anthropic API Key.
-   * Ensure your account has active billing credits (at least $5).
+2. Set `AI_PROVIDER` to `anthropic` or `openai`.
+3. Fill in the corresponding API key:
+   - For Anthropic: set `ANTHROPIC_API_KEY`
+   - For OpenAI: set `OPENAI_API_KEY`
+4. Optionally change the model:
+   - `ANTHROPIC_MODEL` (default: `claude-haiku-4-5-20251001`)
+   - `OPENAI_MODEL` (default: `gpt-5.4`)
+5. Ensure your account has active billing credits (at least $5).
 
 ### 2. (Optional) Configure Supabase Persistence
 Add these to your `.env` for cross-session state persistence:
@@ -64,14 +73,24 @@ SUPABASE_KEY=your_supabase_anon_key
 3. The terminal will auto-install requirements and launch the bot.
 4. The bot will begin scanning your folders for new and unreplied messages.
 
-## ⚙️ Configuration (`config.py`)
+## ⚙️ Configuration
+
+### AI Provider (`.env`)
+
+| Setting | Description | Options |
+|---------|-------------|---------|
+| `AI_PROVIDER` | Which AI backend to use | `anthropic` or `openai` |
+| `ANTHROPIC_MODEL` | Claude model | `claude-haiku-4-5-20251001`, `claude-sonnet-4-20250514`, `claude-opus-4-20250514` |
+| `OPENAI_MODEL` | GPT model | `gpt-5.4`, `gpt-5-mini`, `gpt-5.2`, `gpt-4o-2024-08-06` |
+
+### Bot Settings (`config.py`)
 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | `SCAN_FOLDERS` | Telegram folder tabs to monitor | `["Personal", "Unread"]` |
-| `TYPING_SPEED` | Seconds per character for simulated typing | `0.02` |
+| `TYPING_SPEED` | Seconds per character for simulated typing | `0.04` |
 | `MIN_REPLY_DELAY` / `MAX_REPLY_DELAY` | Human-like reading delay before responding | `3s / 8s` |
-| `CHECK_INTERVAL` | Seconds between scan cycles | `15` |
+| `CHECK_INTERVAL` | Seconds between scan cycles | `5` |
 | `ALLOWED_GROUP_NAMES` | Group chats the bot is allowed to reply in | See config.py |
 | `GROUP_TRIGGERS` | Keywords that trigger replies in group chats | See config.py |
 | `SYSTEM_PROMPT_TEMPLATE` | The AI persona and behavior rules | See config.py |
