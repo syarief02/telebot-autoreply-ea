@@ -564,12 +564,20 @@ async def get_last_incoming_message(page: Page) -> tuple[Optional[str], Optional
             const recentNodes = Array.from(messageNodes).slice(-30);
             
             for (const node of recentNodes) {
-                const isOut = node.classList.contains('is-out') || node.classList.contains('message-out');
-                const isIn = node.classList.contains('is-in') || node.classList.contains('message-in') || node.matches(':not(.is-out):not(.message-out)');
+                // Check both the node itself AND parent elements for is-out class
+                // (Telegram Web K sometimes puts is-out on a parent bubble element)
+                const isOut = node.classList.contains('is-out') || 
+                              node.classList.contains('message-out') ||
+                              !!(node.closest && node.closest('.is-out, .message-out'));
                 
                 // Need text or image content to continue
                 const textNode = node.querySelector('.translatable-message, .text-content');
-                const imgNode = node.querySelector('img.media-photo');
+                
+                // Only match REAL photos — exclude images inside link preview cards (.webpage)
+                let imgNode = node.querySelector('img.media-photo');
+                if (imgNode && imgNode.closest('.webpage, .web-page, .webpage-preview, .media-container .webpage')) {
+                    imgNode = null; // This is a link preview image, not a real photo
+                }
                 
                 if (!textNode && !imgNode) continue;
                 
