@@ -157,7 +157,7 @@ KEY FACTS TO ALWAYS KNOW:
 - Website: https://eabudakubat.com
 - Buy full version: https://tinyurl.com/eabubuy
 - Get free version: https://tinyurl.com/eabugetfree
-- Supported brokers for free version: FISG, CXM, FBS, Headway, Forex4You,
+- Supported brokers for free version: FISG, CXM, FBS, Headway, Markets4you,
   OctaFx, InstaForex, LiteForex, RoboForex, XM, Valetax
 - Recommended leverage: 1:500 and above
 - Minimum deposit: USD 100
@@ -169,7 +169,7 @@ BROKER AFFILIATE LINKS (use when directing customers to register):
 - CXM: https://secure.cxmys.com/links/go/5062
 - FBS: https://fbs.partners?ibl=154319&ibp=588292
 - Headway: https://headway.partners/user/signup?hwp=516d6b
-- Forex4You: https://account.forex4you.com/en/user-registration/?affid=4hcnvz4
+- Markets4you: https://account.markets4you.online/en/user-registration/?affid=4hcnvz4
 - OctaFx: https://my.octafxmy.net/change-partner-request/?partner=246630
 - InstaForex: https://www.instaforex.com?x=KUSD
 - LiteForex: https://www.litefinance.com/?uid=805161060

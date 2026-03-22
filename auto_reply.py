@@ -145,7 +145,7 @@ def extract_accounts_from_text(text: str) -> list[tuple[str, str]]:
     Looks for patterns like 'xm 43195947', 'account 12345678', 'valetax 31018009' etc.
     """
     broker_names = [
-        "fisg", "cxm", "fbs", "headway", "forex4you", "octafx", "octafx",
+        "fisg", "cxm", "fbs", "headway", "markets4you", "octafx", "octafx",
         "instaforex", "liteforex", "litefinance", "roboforex", "xm", "valetax",
         "exness", "icmarkets", "tickmill", "fxpro", "lasforce"
     ]
